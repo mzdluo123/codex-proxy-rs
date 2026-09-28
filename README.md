@@ -92,6 +92,10 @@ API Key 持有者可在同一登录页切换登录身份，进入 `/key-usage` �
 **Codex CLI / 桌面端**：在「使用密钥」中按操作系统复制配置，或通过 CCSwitch 导入。
 合并到客户端配置后重启 Codex。完整步骤、生图配置与排障见[客户端配置](deploy/README.md#客户端配置)
 
+**OMP**：沿用 `openai-codex` provider，配置代理 `/v1` 基址、Client Key、
+`api: openai-codex-responses` 和 `openai-models-list` 发现即可接入对话与 hosted search，
+见 [OMP Codex 接入](docs/api.md#omp-codex-接入)。
+
 **其他 Responses API 客户端**：填写以下信息：
 
 | 配置 | 值 |
