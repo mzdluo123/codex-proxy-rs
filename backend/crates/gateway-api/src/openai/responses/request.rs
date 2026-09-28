@@ -469,10 +469,12 @@ pub(super) fn decode_request_object(
         });
     }
     let model = model.to_owned();
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(true);
+    // 官方 Responses 缺省 stream 为 false，HTTP 返回完整 JSON。WebSocket 没有
+    // 独立的非流式交付，缺省仍按连接固有的流式语义处理；显式布尔值两种传输都保留。
+    let stream = object.get("stream").and_then(Value::as_bool).unwrap_or(matches!(
+        source,
+        RequestDecodeSource::WebSocketFrame,
+    ));
     let store = object
         .get("store")
         .and_then(Value::as_bool)
