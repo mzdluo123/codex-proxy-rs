@@ -120,6 +120,14 @@ fn decoder_should_preserve_the_openai_body_and_only_derive_stable_routing_facts(
 }
 
 #[test]
+fn decoder_should_treat_omitted_http_stream_as_complete_json() {
+    let decoded = generate_request(json!({"model": "smart-code", "input": "hello"}));
+
+    assert!(!decoded.metadata().stream());
+    assert!(openai_wire_body(&decoded).get("stream").is_none());
+}
+
+#[test]
 fn decoder_should_preserve_opaque_client_model_values() {
     for model in [
         format!("future-{}", "x".repeat(512)),
