@@ -469,12 +469,11 @@ pub(super) fn decode_request_object(
         });
     }
     let model = model.to_owned();
-    // 官方 Responses 缺省 stream 为 false，HTTP 返回完整 JSON。WebSocket 没有
-    // 独立的非流式交付，缺省仍按连接固有的流式语义处理；显式布尔值两种传输都保留。
-    let stream = object
-        .get("stream")
-        .and_then(Value::as_bool)
-        .unwrap_or(matches!(source, RequestDecodeSource::WebSocketFrame,));
+    // 缺省值只决定下游交付方式，不补写正文或改变 Provider 的上游流式执行。
+    let stream = match object.get("stream") {
+        Some(value) => value.as_bool().unwrap_or(true),
+        None => matches!(source, RequestDecodeSource::WebSocketFrame),
+    };
     let store = object
         .get("store")
         .and_then(Value::as_bool)

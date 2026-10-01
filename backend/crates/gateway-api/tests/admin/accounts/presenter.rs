@@ -29,18 +29,21 @@ fn quota_forecast_projection_only_exposes_capacity_and_preserves_null_zero() {
         incomplete_tokens: false,
         estimated_tokens: Some(1_000_000),
         estimated_usd: None,
-        remaining_tokens: Some(0),
-        remaining_usd: None,
     };
     let mut monthly = forecast.clone();
     monthly.period = AccountUsagePeriod::Monthly;
     monthly.extrapolated = true;
     monthly.target_seconds = 30 * 86_400;
-    let view = AccountQuotaForecastData::from(AccountQuotaForecastReport {
-        account_id: "acct_forecast".to_owned(),
-        generated_at: now,
-        forecasts: [forecast, monthly],
-    });
+    monthly.estimated_tokens = Some(0);
+    monthly.estimated_usd = Some(0.0);
+    let view = AccountQuotaForecastData::from((
+        AccountQuotaForecastReport {
+            account_id: "acct_forecast".to_owned(),
+            generated_at: now,
+            forecasts: [forecast, monthly],
+        },
+        gateway_api::TimePresenter::new(Default::default()),
+    ));
     let value = serde_json::to_value(view).unwrap();
     assert_eq!(value["accountId"], "acct_forecast");
     assert_eq!(value["generatedAt"], "2026-09-12T08:00:00+08:00");
@@ -49,7 +52,16 @@ fn quota_forecast_projection_only_exposes_capacity_and_preserves_null_zero() {
     assert_eq!(week["estimatedTokensDisplay"], "1M");
     assert!(week["estimatedUsd"].is_null());
     assert_eq!(week["estimatedUsdDisplay"], "—");
-    assert_eq!(week["remainingTokensDisplay"], "0");
+    for forecast in value["forecasts"].as_array().unwrap() {
+        for field in [
+            "remainingTokens",
+            "remainingTokensDisplay",
+            "remainingUsd",
+            "remainingUsdDisplay",
+        ] {
+            assert!(forecast.get(field).is_none(), "unexpected field: {field}");
+        }
+    }
     assert_eq!(
         week["source"],
         serde_json::json!({
@@ -66,6 +78,10 @@ fn quota_forecast_projection_only_exposes_capacity_and_preserves_null_zero() {
     assert!(week.get("method").is_none());
     assert!(week.get("methodDisplay").is_none());
     assert!(value.get("generatedAtDisplay").is_none());
+    assert_eq!(value["forecasts"][1]["estimatedTokens"], 0);
+    assert_eq!(value["forecasts"][1]["estimatedTokensDisplay"], "0");
+    assert_eq!(value["forecasts"][1]["estimatedUsd"], 0.0);
+    assert_eq!(value["forecasts"][1]["estimatedUsdDisplay"], "$0.00");
     assert_eq!(value["forecasts"][1]["period"], "monthly");
     assert_eq!(value["forecasts"][1]["targetDays"], 30.0);
     assert_eq!(value["forecasts"][1]["extrapolated"], true);
@@ -94,7 +110,7 @@ fn model_catalog_projection_keeps_upstream_document_and_rejects_non_codex_wire()
     .expect("codex catalog is projectable");
     assert_eq!(data.model_count, 1);
     assert_eq!(data.catalog, body);
-    assert_eq!(data.observed_at, "2026-09-12T16:00:00+08:00");
+    assert_eq!(data.observed_at, "2026-09-12T08:00:00+00:00");
 
     // 只有模型 ID 的 API 目录拼不出合法的 model_catalog_json，不能降格返回给客户端。
     let adapted = RawJsonPayload::new("openai", Bytes::from_static(br#"{"models":[]}"#))

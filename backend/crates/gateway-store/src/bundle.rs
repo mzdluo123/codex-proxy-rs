@@ -10,6 +10,7 @@ pub struct StoreBundle {
     admin_ports: AdminStorePorts,
     core_ports: CoreStorePorts,
     provider_ports: ProviderStorePorts,
+    retention: Arc<dyn gateway_admin::ports::retention::RetentionStore>,
     worker_leader_lease: Arc<dyn WorkerLeaderLeasePort>,
     health_probes: Vec<Arc<dyn HealthProbe>>,
     worker_contributions: Vec<WorkerContribution>,
@@ -31,6 +32,11 @@ impl StoreBundle {
     #[must_use]
     pub fn provider_ports(&self) -> ProviderStorePorts {
         self.provider_ports.clone()
+    }
+
+    #[must_use]
+    pub fn retention(&self) -> Arc<dyn gateway_admin::ports::retention::RetentionStore> {
+        Arc::clone(&self.retention)
     }
 
     #[must_use]
@@ -158,7 +164,10 @@ async fn connect(
                 observability_query_budget.clone(),
             )),
             admin_account_runtime,
-            Arc::new(postgres::PgAccountGroupRepository::new(pool.clone())),
+            Arc::new(
+                postgres::PgAccountGroupRepository::new(pool.clone())
+                    .with_timezone(config.timezone),
+            ),
             Arc::new(postgres::PgProxyRepository::new(pool.clone())),
         ),
         Arc::new(AuthStoreAdapter {
@@ -168,12 +177,15 @@ async fn connect(
             state: redis::RedisAuthStateRepository::new(redis_connection.clone(), REDIS_NAMESPACE)?,
         }),
         Arc::new(postgres::PgAdminClientKeyStore::new(pool.clone())),
-        Arc::new(postgres::PgAdminObservabilityStore::new(
-            pool.clone(),
-            Some(credential_leases.clone()),
-            Some(Arc::clone(&cooldowns) as Arc<dyn ProviderCooldownPort>),
-            observability_query_budget,
-        )),
+        Arc::new(
+            postgres::PgAdminObservabilityStore::new(
+                pool.clone(),
+                Some(credential_leases.clone()),
+                Some(Arc::clone(&cooldowns) as Arc<dyn ProviderCooldownPort>),
+                observability_query_budget,
+            )
+            .with_timezone(config.timezone),
+        ),
         Arc::new(AdminSettingsStoreAdapter {
             control_plane: postgres::PgControlPlaneRepository::new(pool.clone()),
         }),
@@ -219,7 +231,9 @@ async fn connect(
         ),
         Arc::new(client_key_usage),
     )
-    .with_budget(Arc::new(postgres::PgClientBudgetStore::new(pool.clone())))
+    .with_budget(Arc::new(
+        postgres::PgClientBudgetStore::new(pool.clone()).with_timezone(config.timezone),
+    ))
     .with_session_affinity(Arc::clone(&provider_session_affinity));
 
     let provider_ports = ProviderStorePorts::new(
@@ -256,7 +270,6 @@ async fn connect(
                 execution_writer,
                 client_key_usage_writer,
                 admission_release_writer,
-                retention,
             )?,
             None,
         ),
@@ -273,6 +286,7 @@ async fn connect(
         admin_ports,
         core_ports,
         provider_ports,
+        retention,
         worker_leader_lease,
         health_probes,
         worker_contributions,

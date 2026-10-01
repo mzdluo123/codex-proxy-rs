@@ -1674,6 +1674,8 @@ dependencies = [
  "gateway-core",
  "heck",
  "hex",
+ "prettyplease",
+ "quote",
  "rand_core 0.6.4",
  "secrecy",
  "semver",
@@ -1681,6 +1683,7 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "subtle",
+ "syn 2.0.119",
  "tempfile",
  "thiserror",
  "tokio",
@@ -1703,6 +1706,9 @@ dependencies = [
  "gateway-core",
  "gateway-protocol",
  "headers",
+ "http",
+ "http-body",
+ "http-body-util",
  "secrecy",
  "serde",
  "serde_json",
@@ -1725,9 +1731,13 @@ dependencies = [
  "async-trait",
  "base64 0.23.1",
  "bytes",
+ "chrono",
  "chrono-tz",
  "futures",
  "futures-timer",
+ "http",
+ "http-body",
+ "http-body-util",
  "semver",
  "serde",
  "serde_json",
@@ -1770,12 +1780,14 @@ dependencies = [
  "serde",
  "serde_ignored",
  "serde_json",
+ "serde_path_to_error",
  "sha2 0.11.0",
  "tar",
  "tempfile",
  "thiserror",
  "tokio",
  "tokio-rustls",
+ "tokio-tungstenite 0.29.0",
  "tower-service",
  "tracing",
  "tracing-appender",
@@ -1800,6 +1812,9 @@ dependencies = [
  "gateway-protocol",
  "gateway-store",
  "hex",
+ "http",
+ "http-body",
+ "http-body-util",
  "image",
  "jsonschema",
  "roxmltree",
@@ -1813,6 +1828,7 @@ dependencies = [
  "tempfile",
  "thiserror",
  "tokio",
+ "tokio-tungstenite 0.29.0",
  "tracing",
  "url",
  "uuid",
@@ -3144,6 +3160,16 @@ name = "precomputed-hash"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "925383efa346730478fb4838dbe9137d2a47675ad789c546d150a6e1dd4ab31c"
+
+[[package]]
+name = "prettyplease"
+version = "0.2.37"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "479ca8adacdd7ce8f1fb39ce9ecccbfe93a3f1344b3d0d97f20bc0196208f62b"
+dependencies = [
+ "proc-macro2",
+ "syn 2.0.119",
+]
 
 [[package]]
 name = "primefield"

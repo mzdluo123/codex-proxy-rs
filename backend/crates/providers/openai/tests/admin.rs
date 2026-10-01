@@ -352,7 +352,14 @@ async fn copying_builtin_prices_keeps_cache_read_and_write_fallback_costs() {
         .await
         .unwrap();
     let prices = bundle.admin_provider().pricing_catalog();
-    for model in ["gpt-4", "gpt-4o", "gpt-6-astra", "gpt-6-sol", "gpt-6-luna"] {
+    for model in [
+        "gpt-4",
+        "gpt-4o",
+        "gpt-6-astra",
+        "gpt-6.1-sol",
+        "gpt-6-sol",
+        "gpt-6-luna",
+    ] {
         let usage = OpenAiBillingUsage::new(100, 10, 20, 15);
         let inherited = openai_billing_breakdown(model, usage, None).unwrap();
         let copied =
@@ -879,6 +886,85 @@ async fn openai_admin_quota_refresh_updates_the_account_plan() {
             store.account("acct_upgraded_plan").unwrap().plan_type(),
             Some("pro")
         );
+    }
+}
+
+#[tokio::test]
+async fn openai_admin_quota_projects_credit_balance_from_refresh_and_cached_observation() {
+    let store = Arc::new(MemoryAccountStore::default());
+    store
+        .seed_oauth_credential(ImportCodexOAuthCredential {
+            account_id: "acct_credit_balance".to_owned(),
+            name: "credit balance".to_owned(),
+            secret: secret("credit-balance-test-token"),
+            verified_account: profile("chatgpt-credit-balance"),
+            next_refresh_at: None,
+            enabled: true,
+        })
+        .await;
+    let account = store.account("acct_credit_balance").unwrap();
+    let server = MockServer::start().await;
+    let mut config = valid_config();
+    config.config.api.base_url = server.uri();
+    let bundle = provider_openai::initialize(
+        config.config,
+        provider_ports_with(store.clone(), Arc::new(TestOAuthPending::default())),
+    )
+    .await
+    .unwrap();
+    for (wire, expected) in [
+        (
+            json!({"has_credits": true, "unlimited": false, "balance": "62500"}),
+            Some((true, false, Some("62500"))),
+        ),
+        (
+            json!({"has_credits": false, "unlimited": false, "balance": 0}),
+            Some((false, false, Some("0"))),
+        ),
+        (
+            json!({"has_credits": true, "unlimited": false, "balance": "9007199254740993.1234567890"}),
+            Some((true, false, Some("9007199254740993.1234567890"))),
+        ),
+        (
+            json!({"has_credits": true, "unlimited": false, "balance": null}),
+            Some((true, false, None)),
+        ),
+        (
+            json!({"has_credits": false, "unlimited": true}),
+            Some((false, true, None)),
+        ),
+        (Value::Null, None),
+    ] {
+        let _mock = Mock::given(method("GET"))
+            .and(path("/api/codex/usage"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(json!({
+                "rate_limit": {"allowed": true, "primary_window": {"used_percent": 28}},
+                "credits": wire,
+            })))
+            .expect(1)
+            .mount_as_scoped(&server)
+            .await;
+        for refresh in [true, false] {
+            let quota = bundle
+                .admin_provider()
+                .quota(ProviderQuotaRequest {
+                    account_id: account.id().clone(),
+                    refresh,
+                    rolling_usage: None,
+                })
+                .await
+                .expect("quota with credits");
+            assert_eq!(
+                quota.credits.as_ref().map(|credits| (
+                    credits.has_credits,
+                    credits.unlimited,
+                    credits.balance.as_deref(),
+                )),
+                expected
+            );
+            assert_eq!(quota.windows[0].used_percent, Some(28.0));
+            assert!(!quota.limit_reached);
+        }
     }
 }
 
@@ -1496,7 +1582,7 @@ fn initialized_provider_request(operation: Operation, account_id: &str) -> Provi
     let account_scope = initialized_account_scope(account_id);
     let snapshot = RuntimeSnapshot::new(
         ConfigRevision::new(1).expect("revision"),
-        account_policy(),
+        gateway_core::settings::SettingsValues::new(2, 10, "smart", Default::default(), None, None),
         vec![provider.clone()],
         vec![ProviderModel::new(
             provider,

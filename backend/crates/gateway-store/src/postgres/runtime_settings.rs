@@ -125,7 +125,6 @@ pub struct RuntimeSettingsUpdate {
         gateway_core::routing::ProviderKind,
         Option<gateway_core::account::OpaqueProviderData>,
     >,
-    pub admin_api_key: Option<String>,
     pub refresh_margin_seconds: u64,
     pub refresh_concurrency: u32,
     pub max_concurrent_per_account: u32,
@@ -160,10 +159,6 @@ impl fmt::Debug for RuntimeSettingsUpdate {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         formatter
             .debug_struct("RuntimeSettingsUpdate")
-            .field(
-                "admin_api_key",
-                &self.admin_api_key.as_ref().map(|_| "[REDACTED]"),
-            )
             .field("rotation_strategy", &self.rotation_strategy)
             .field("request_location_enabled", &self.request_location_enabled)
             .field("request_location", &self.request_location)
@@ -286,6 +281,34 @@ pub(crate) async fn load_runtime_settings_from_pool(pool: &PgPool) -> StoreResul
 }
 
 impl ProviderRuntimePolicyPort for PgRuntimeSettingsRepository {
+    fn claim_warmup_slot<'a>(
+        &'a self,
+        timezone: gateway_core::time::DeploymentTimeZone,
+        slot: chrono::NaiveDateTime,
+    ) -> futures::future::BoxFuture<'a, Result<bool, ProviderStoreError>> {
+        Box::pin(async move {
+            let mut transaction = self
+                .pool
+                .begin()
+                .await
+                .map_err(|_| provider_unavailable("claim warmup slot"))?;
+            // 去重只需覆盖近期开关、重启与回拨，保留七天后由下一次领取回收。
+            sqlx::query(
+                "delete from account_warmup_slots where claimed_at < now() - interval '7 days'",
+            )
+            .execute(&mut *transaction)
+            .await
+            .map_err(|_| provider_unavailable("cleanup warmup slots"))?;
+            let claimed = sqlx::query("insert into account_warmup_slots (timezone, local_slot) values ($1, $2) on conflict do nothing")
+                .bind(timezone.name()).bind(slot).execute(&mut *transaction).await
+                .map_err(|_| provider_unavailable("claim warmup slot"))?.rows_affected() == 1;
+            transaction
+                .commit()
+                .await
+                .map_err(|_| provider_unavailable("commit warmup slot"))?;
+            Ok(claimed)
+        })
+    }
     fn initialize_request_profile<'a>(
         &'a self,
         provider: &'a gateway_core::routing::ProviderKind,
@@ -465,41 +488,39 @@ pub(crate) async fn update_runtime_settings_in_transaction(
     let next = sqlx::query_scalar::<_, i64>(
         "update runtime_settings
              set config_revision = config_revision + 1,
-	                 admin_api_key = $1,
-	                 refresh_margin_seconds = $2,
-	                 refresh_concurrency = $3,
-	                 max_concurrent_per_account = $4,
-	                 request_interval_ms = $5,
-	                 rotation_strategy = $6,
-	                 model_mappings_json = $7,
-	                 usage_retention_days = $8,
-	                 ops_event_retention_days = $9,
-	                 audit_retention_days = $10,
-	                 min_codex_desktop_version = $11,
-	                 min_codex_cli_version = $12,
-                     max_waiting_per_key = $13,
-                     max_waiting_per_account = $14,
-                     concurrency_wait_timeout_seconds = $15,
-                     account_auto_freeze_enabled = $16,
-                     account_auto_freeze_threshold = $17,
-                     account_auto_freeze_window_seconds = $18,
-                     account_auto_freeze_duration_seconds = $19,
-                     account_auto_freeze_probe_enabled = $20,
-                     account_auto_freeze_probe_model = $21,
-                     account_auto_freeze_adaptive_concurrency = $22,
-                     request_location_json = $23,
-                     request_location_enabled = $24,
-                     responses_max_decompressed_body_bytes = $25,
-	                 provider_request_profiles_json = (provider_request_profiles_json - $26::text[]) || $27::jsonb,
-                     account_warmup_enabled = $28,
-                     account_warmup_schedule_time = $29,
-                     account_warmup_model = $30,
-                     smart_scheduling_json = $31,
+	                 refresh_margin_seconds = $1,
+	                 refresh_concurrency = $2,
+	                 max_concurrent_per_account = $3,
+	                 request_interval_ms = $4,
+	                 rotation_strategy = $5,
+	                 model_mappings_json = $6,
+	                 usage_retention_days = $7,
+	                 ops_event_retention_days = $8,
+	                 audit_retention_days = $9,
+	                 min_codex_desktop_version = $10,
+	                 min_codex_cli_version = $11,
+                     max_waiting_per_key = $12,
+                     max_waiting_per_account = $13,
+                     concurrency_wait_timeout_seconds = $14,
+                     account_auto_freeze_enabled = $15,
+                     account_auto_freeze_threshold = $16,
+                     account_auto_freeze_window_seconds = $17,
+                     account_auto_freeze_duration_seconds = $18,
+                     account_auto_freeze_probe_enabled = $19,
+                     account_auto_freeze_probe_model = $20,
+                     account_auto_freeze_adaptive_concurrency = $21,
+                     request_location_json = $22,
+                     request_location_enabled = $23,
+                     responses_max_decompressed_body_bytes = $24,
+	                 provider_request_profiles_json = (provider_request_profiles_json - $25::text[]) || $26::jsonb,
+                     account_warmup_enabled = $27,
+                     account_warmup_schedule_time = $28,
+                     account_warmup_model = $29,
+                     smart_scheduling_json = $30,
 	                 updated_at = now()
 	             where id = 1
 	             returning config_revision",
     )
-    .bind(update.admin_api_key.as_deref())
     .bind(refresh_margin_seconds)
     .bind(i64::from(update.refresh_concurrency))
     .bind(i64::from(update.max_concurrent_per_account))

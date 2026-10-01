@@ -76,7 +76,12 @@ fn core_value_owners_do_not_depend_on_execution_or_routing() {
             "account/selection.rs" => Some(&["account", "concurrency", "identity", "validation"]),
             "concurrency.rs" => Some(&["error"]),
             "account/store.rs" => Some(&["account", "error", "identity", "validation"]),
-            path if path.starts_with("policy/") => Some(&["account", "policy", "validation"]),
+            path if path.starts_with("policy/") => {
+                Some(&["account", "identity", "policy", "validation"])
+            }
+            "settings/values.rs" | "settings/compiled.rs" => {
+                Some(&["account", "concurrency", "identity", "metering", "policy"])
+            }
             path if path.starts_with("account/") => Some(&["account", "identity", "validation"]),
             _ => None,
         };
@@ -205,6 +210,7 @@ const ADAPTER_PUBLIC_MODULES: &[(&str, &[&str])] = &[
             "plugin_distribution",
             "process",
             "proxy_probe",
+            "retention",
             "serve",
             "system_update",
             "workers",
@@ -378,7 +384,9 @@ fn workspace_modules_follow_conventional_file_layout() {
     let targets = test_source_roots();
     for member in WORKSPACE_MEMBERS {
         let member_root = backend_root().join(member);
-        assert_module_tree(&member_root.join("src"), &["lib.rs", "main.rs"]);
+        let src = member_root.join("src");
+        assert_module_tree(&src, &["lib.rs", "main.rs"]);
+        assert_directory_modules_have_children(&src, &["lib.rs", "main.rs"]);
 
         let tests = member_root.join("tests");
         if tests.is_dir() {
@@ -388,6 +396,29 @@ fn workspace_modules_follow_conventional_file_layout() {
                 &roots.iter().map(String::as_str).collect::<Vec<_>>(),
             );
         }
+    }
+}
+
+fn assert_directory_modules_have_children(root: &Path, crate_roots: &[&str]) {
+    let files = super::rust_files(root);
+    for relative in &files {
+        if crate_roots
+            .iter()
+            .any(|candidate| relative == Path::new(candidate))
+            || relative.file_name().and_then(|value| value.to_str()) != Some("mod.rs")
+        {
+            continue;
+        }
+
+        let directory = relative.parent().expect("mod.rs parent");
+        assert!(
+            files
+                .iter()
+                .any(|candidate| candidate != relative && candidate.starts_with(directory)),
+            "{} is a leaf module and must use {}",
+            root.join(relative).display(),
+            root.join(directory).with_extension("rs").display(),
+        );
     }
 }
 

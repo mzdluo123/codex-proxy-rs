@@ -13,12 +13,15 @@ pub mod health;
 pub mod identity;
 pub mod lifecycle;
 pub mod metering;
+pub mod middleware;
 pub mod operation;
 pub mod policy;
 pub mod provider_ports;
 pub mod routing;
 pub mod runtime;
+pub mod settings;
 pub mod task;
+pub mod time;
 pub mod upstream;
 pub mod validation;
 

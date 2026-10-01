@@ -1,5 +1,6 @@
 //! PostgreSQL owner for provider-neutral account groups and memberships.
 
+use gateway_admin::model::audit::MutationAuditOperation;
 use std::{collections::BTreeMap, str::FromStr as _};
 
 use async_trait::async_trait;
@@ -36,13 +37,23 @@ const ENTITY: &str = "account group";
 /// Account group store with transactional revision and audit ownership.
 #[derive(Clone)]
 pub struct PgAccountGroupRepository {
+    timezone: gateway_core::time::DeploymentTimeZone,
     pool: PgPool,
 }
 
 impl PgAccountGroupRepository {
     #[must_use]
-    pub const fn new(pool: PgPool) -> Self {
-        Self { pool }
+    pub fn new(pool: PgPool) -> Self {
+        Self {
+            pool,
+            timezone: Default::default(),
+        }
+    }
+
+    #[must_use]
+    pub fn with_timezone(mut self, timezone: gateway_core::time::DeploymentTimeZone) -> Self {
+        self.timezone = timezone;
+        self
     }
 
     async fn current_revision(&self) -> AdminStoreResult<gateway_admin::model::Revision> {
@@ -59,7 +70,7 @@ impl PgAccountGroupRepository {
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?
             .ok_or_else(|| not_found(id.as_str()))?;
-        let costs = group_costs(&self.pool, &[id.as_str().to_owned()])
+        let costs = group_costs(&self.pool, &[id.as_str().to_owned()], self.timezone)
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
         if let Some(usage) = costs.get(id.as_str()) {
@@ -135,7 +146,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
             .iter()
             .map(|record| record.id.as_str().to_owned())
             .collect::<Vec<_>>();
-        let costs = group_costs(&self.pool, &group_ids)
+        let costs = group_costs(&self.pool, &group_ids, self.timezone)
             .await
             .map_err(|error| admin_store_error(ENTITY, error))?;
         for record in &mut items {
@@ -231,8 +242,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
         let id = command.id.clone();
         let audit = mutation_audit(
             context,
-            "create",
-            "account_group",
+            MutationAuditOperation::AccountGroupCreate,
             id.as_str(),
             vec![
                 "name".to_owned(),
@@ -264,8 +274,7 @@ impl AccountGroupStore for PgAccountGroupRepository {
         let id = command.id.clone();
         let audit = mutation_audit(
             context,
-            "update",
-            "account_group",
+            MutationAuditOperation::AccountGroupUpdate,
             id.as_str(),
             vec![
                 "name".to_owned(),
@@ -308,8 +317,9 @@ impl AccountGroupStore for PgAccountGroupRepository {
         let id = command.id.clone();
         let audit = mutation_audit(
             context,
-            if command.enabled { "enable" } else { "disable" },
-            "account_group",
+            MutationAuditOperation::AccountGroupEnabled {
+                enabled: command.enabled,
+            },
             id.as_str(),
             vec!["enabled".to_owned()],
         );
@@ -341,7 +351,12 @@ impl AccountGroupStore for PgAccountGroupRepository {
         context: &MutationContext,
     ) -> AdminStoreResult<AccountGroupMutation> {
         let id = command.id.clone();
-        let audit = mutation_audit(context, "delete", "account_group", id.as_str(), Vec::new());
+        let audit = mutation_audit(
+            context,
+            MutationAuditOperation::AccountGroupDelete,
+            id.as_str(),
+            Vec::new(),
+        );
         let revision = self
             .mutate(audit, |transaction| {
                 Box::pin(async move {
@@ -511,6 +526,7 @@ fn group_record(row: &sqlx::postgres::PgRow) -> StoreResult<AccountGroupRecord> 
 async fn group_costs(
     pool: &PgPool,
     group_ids: &[String],
+    timezone: gateway_core::time::DeploymentTimeZone,
 ) -> StoreResult<BTreeMap<String, AccountGroupUsage>> {
     if group_ids.is_empty() {
         return Ok(BTreeMap::new());
@@ -524,8 +540,7 @@ async fn group_costs(
          )
          select requested_groups.group_id,
                 coalesce(sum(mr.cost_amount) filter (
-                  where mr.started_at >= date_trunc('day', now() at time zone 'Asia/Shanghai')
-                    at time zone 'Asia/Shanghai'
+                  where mr.started_at >= $2
                 ), 0)::text as today_usd,
                 coalesce(sum(mr.cost_amount), 0)::text as retained_total_usd
          from requested_groups
@@ -544,6 +559,11 @@ async fn group_costs(
     // 动态片段仅为共享的固定 usage-fact predicate；group IDs 仍使用 bind。
     let rows = sqlx::query(sqlx::AssertSqlSafe(statement))
         .bind(group_ids)
+        .bind(
+            timezone
+                .day_start(chrono::Utc::now())
+                .ok_or_else(|| invalid("invalid business date"))?,
+        )
         .fetch_all(pool)
         .await
         .map_err(|_| unavailable("load account group costs"))?;

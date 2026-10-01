@@ -37,6 +37,7 @@ async fn response_json(response: axum::response::Response) -> Value {
 
 fn update_body() -> Value {
     json!({
+        "configRevision": 7,
         "requestLocationEnabled": false,
         "requestLocation": {"country":"US", "region":"Ohio", "city":"Piketon", "timezone":"America/New_York"},
         "modelMappings": {
@@ -243,10 +244,15 @@ fn settings_response_should_cover_the_full_runtime_settings_contract() {
             .expect("timestamp"),
     };
 
-    let value = serde_json::to_value(RuntimeSettingsView::from(settings)).expect("serialize view");
+    let value = serde_json::to_value(RuntimeSettingsView::from((
+        settings,
+        gateway_api::TimePresenter::new(Default::default()),
+    )))
+    .expect("serialize view");
     assert_eq!(
         value,
         json!({
+            "configRevision": 7,
             "providerRequestProfiles": {},
             "openaiClientProfile": null,
             "xaiClientProfile": null,
@@ -282,7 +288,8 @@ fn settings_response_should_cover_the_full_runtime_settings_contract() {
                 "accountWarmupEnabled": false,
                 "accountWarmupScheduleTime": "08:00",
                 "accountWarmupModel": null,
-                "updatedAt": "2026-08-02T10:30:00Z"
+                "updatedAt": "2026-08-02T10:30:00Z",
+                "updatedAtDisplay": "2026-08-02 18:30:00"
         })
     );
 }
@@ -352,19 +359,22 @@ fn settings_request_and_response_fields_should_stay_in_lockstep() {
         updated_at: chrono::Utc::now(),
     };
 
-    let response_fields: BTreeSet<String> =
-        serde_json::to_value(RuntimeSettingsView::from(settings))
-            .expect("serialize view")
-            .as_object()
-            .expect("view object")
-            .keys()
-            .cloned()
-            .collect();
+    let response_fields: BTreeSet<String> = serde_json::to_value(RuntimeSettingsView::from((
+        settings,
+        gateway_api::TimePresenter::new(Default::default()),
+    )))
+    .expect("serialize view")
+    .as_object()
+    .expect("view object")
+    .keys()
+    .cloned()
+    .collect();
     let mut expected_fields = request_fields;
     expected_fields.insert("providerRequestProfiles".to_owned());
     expected_fields.insert("openaiClientProfile".to_owned());
     expected_fields.insert("xaiClientProfile".to_owned());
     expected_fields.insert("updatedAt".to_owned());
+    expected_fields.insert("updatedAtDisplay".to_owned());
     expected_fields.insert("smartSchedulingDefaults".to_owned());
 
     assert_eq!(response_fields, expected_fields);
@@ -420,7 +430,7 @@ async fn settings_post_should_replace_global_model_mappings() {
         .expect("settings update response");
     let data = response_json(response).await["data"].clone();
 
-    assert!(data.get("configRevision").is_none());
+    assert_eq!(data["configRevision"], 8);
     assert_eq!(data["modelMappings"]["gpt-5.4"], "gpt-5.5");
     assert_eq!(data["modelMappings"]["grok-latest"], "grok-4.5");
 }
@@ -608,12 +618,12 @@ async fn request_location_should_normalize_toggle_and_round_trip() {
         .oneshot(request(Method::GET, "/api/admin/settings", None))
         .await
         .unwrap();
-    assert_eq!(
-        response_json(response).await["data"]["requestLocation"],
-        expected
-    );
+    let data = response_json(response).await["data"].clone();
+    assert_eq!(data["requestLocation"], expected);
+    let mut revision = data["configRevision"].clone();
     for enabled in [false, true] {
         let mut body = update_body();
+        body["configRevision"] = revision.clone();
         body["requestLocationEnabled"] = json!(enabled);
         body["requestLocation"] = expected.clone();
         let response = app(fixture.state())
@@ -630,6 +640,7 @@ async fn request_location_should_normalize_toggle_and_round_trip() {
             .await
             .unwrap();
         let data = response_json(response).await["data"].clone();
+        revision = data["configRevision"].clone();
         assert_eq!(data["requestLocationEnabled"], json!(enabled));
         assert_eq!(data["requestLocation"], expected);
     }
@@ -1214,4 +1225,54 @@ async fn pricing_endpoints_require_administrator_authentication() {
             StatusCode::UNAUTHORIZED
         );
     }
+}
+
+#[tokio::test]
+async fn settings_update_rejects_a_stale_version_without_replacing_the_saved_value() {
+    let fixture = AdminTestFixture::new().await;
+    fixture.auth.insert_session("valid-session");
+    let router = app(fixture.state());
+    let first = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/admin/settings/update",
+            Some(update_body()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    let first = response_json(first).await["data"].clone();
+    let mut stale = update_body();
+    stale["refreshMarginSeconds"] = json!(9999);
+    let conflict = router
+        .clone()
+        .oneshot(request(
+            Method::POST,
+            "/api/admin/settings/update",
+            Some(stale.clone()),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(conflict.status(), StatusCode::CONFLICT);
+    let current = router
+        .clone()
+        .oneshot(request(Method::GET, "/api/admin/settings", None))
+        .await
+        .unwrap();
+    assert_eq!(response_json(current).await["data"], first);
+    stale["configRevision"] = first["configRevision"].clone();
+    let retry = router
+        .oneshot(request(
+            Method::POST,
+            "/api/admin/settings/update",
+            Some(stale),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(retry.status(), StatusCode::OK);
+    assert_eq!(
+        response_json(retry).await["data"]["refreshMarginSeconds"],
+        9999
+    );
 }

@@ -2,18 +2,27 @@
 
 use std::str::FromStr;
 
-use chrono::{DateTime, TimeDelta, Timelike as _, Utc};
+use chrono::{DateTime, TimeDelta, Utc};
 
 use super::{AdminModelError, PageSize};
 
-/// 观测日界所用的东八区(UTC+8)固定偏移秒数。
-const CHINA_OFFSET_SECONDS: i64 = 8 * 60 * 60;
+/// 页面筛选表达自然日范围，具体 UTC 边界由部署时区解析。
+#[derive(Debug, Clone, Copy)]
+pub enum CalendarPeriod {
+    Today,
+    SevenDays,
+    ThirtyDays,
+}
 
-/// 将 UTC 时刻截断到东八区(UTC+8)当日零点,返回值仍为 UTC。
-#[must_use]
-pub fn china_day_start(value: DateTime<Utc>) -> DateTime<Utc> {
-    let elapsed = (value.timestamp() + CHINA_OFFSET_SECONDS).rem_euclid(24 * 60 * 60);
-    value - TimeDelta::seconds(elapsed) - TimeDelta::nanoseconds(i64::from(value.nanosecond()))
+impl CalendarPeriod {
+    pub fn parse(value: &str) -> Result<Self, AdminModelError> {
+        match value {
+            "today" => Ok(Self::Today),
+            "7d" => Ok(Self::SevenDays),
+            "30d" => Ok(Self::ThirtyDays),
+            _ => Err(AdminModelError::InvalidTimeRange),
+        }
+    }
 }
 
 /// 外部观测查询的 UTC 时间范围。
@@ -24,6 +33,25 @@ pub struct TimeRange {
 }
 
 impl TimeRange {
+    pub fn calendar_at(
+        period: CalendarPeriod,
+        end: DateTime<Utc>,
+        timezone: gateway_core::time::DeploymentTimeZone,
+    ) -> Result<Self, AdminModelError> {
+        let days = match period {
+            CalendarPeriod::Today => 0,
+            CalendarPeriod::SevenDays => 6,
+            CalendarPeriod::ThirtyDays => 29,
+        };
+        let start = timezone
+            .days_before(end, days)
+            .ok_or(AdminModelError::InvalidTimeRange)?;
+        // 自然日刚开始时允许空快照，不借用前一天或伪造未来终点。
+        if start == end {
+            return Ok(Self { start, end });
+        }
+        Self::new(start, end)
+    }
     /// 创建最长 366 天的正时间范围。
     ///
     /// # Errors
@@ -558,6 +586,9 @@ pub struct UsageListRecord {
     pub provider_account_email: Option<String>,
     /// 账号当前备注，按内部账号 ID 关联，不属于请求历史快照。
     pub provider_account_notes: Option<String>,
+    /// 账号当前套餐，不属于请求历史快照。
+    pub provider_account_plan_type: Option<String>,
+    pub provider_account_plan_type_display: Option<String>,
     pub provider_account_authentication_kind: Option<String>,
     pub upstream_model_id: Option<String>,
     pub upstream_transport: Option<String>,
@@ -757,11 +788,20 @@ pub struct UsageSummary {
     pub average_latency_ms: Option<u64>,
 }
 
+/// 诊断聚合结果，分母包含截取展示项之前的全部匹配请求。
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct DiagnosticsObservation {
+    pub total_request_count: u64,
+    pub items: Vec<DiagnosticObservation>,
+}
+
 /// 单个诊断维度值的聚合结果。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DiagnosticObservation {
     pub key: String,
     pub name: String,
+    pub account_provider_kind: Option<String>,
+    pub account_plan_type: Option<String>,
     pub request_count: u64,
     pub success_count: u64,
     pub failure_count: u64,
@@ -772,6 +812,7 @@ pub struct DiagnosticObservation {
     pub first_token_p95_ms: Option<u64>,
     pub non_completion_count: u64,
     pub retry_count: u64,
+    pub retried_request_count: u64,
     pub cost_coverage: CostCoverage,
     pub costs: Vec<CurrencyCost>,
 }
@@ -796,6 +837,8 @@ pub struct OpsError {
     pub provider_account_ref: Option<String>,
     pub provider_account_name: Option<String>,
     pub provider_account_email: Option<String>,
+    pub provider_account_plan_type: Option<String>,
+    pub provider_account_plan_type_display: Option<String>,
     pub provider_account_authentication_kind: Option<String>,
     pub upstream_model_id: Option<String>,
     pub upstream_transport: Option<String>,
@@ -1142,6 +1185,8 @@ pub struct UsageInsights {
 pub struct DiagnosticsItem {
     pub key: String,
     pub name: String,
+    pub account_plan_type: Option<String>,
+    pub account_plan_type_display: Option<String>,
     pub request_count: u64,
     pub success_count: u64,
     pub error_count: u64,
